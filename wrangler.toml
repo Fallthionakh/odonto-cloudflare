@@ -1,4 +1,4 @@
-name = "odonto"
+name = "odonto-cloudflare"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
