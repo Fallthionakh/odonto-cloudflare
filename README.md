@@ -110,9 +110,12 @@ cloudflare-worker/
     router.js            micro-routeur (sans dépendance)
     auth.js               hachage de mot de passe (PBKDF2) + sessions
     supabase.js           client REST minimal vers Supabase (PostgREST)
-    routes/               une route par domaine (auth, users, patients, consultations, reference, reports)
-    utils/                logique des rapports, tranches d'âge, génération .xlsx
-    data/                 listes officielles (pathologies, traitements, indicateurs)
+    routes/               une route par domaine (auth, users, patients, consultations, reference, reports, import)
+    utils/                logique des rapports, tranches d'âge, génération/lecture .xlsx, import Excel
+      xlsx/               zip.js + xlsxBuilder.js (écriture), inflate.js + xlsxReader.js (lecture)
+      importMapping.js    reconnaissance des colonnes Excel + conversion de valeurs
+      importer.js         logique de création/dédoublonnage lors d'un import
+    data/                 listes officielles (pathologies, traitements, indicateurs, importFields.js)
   public/                 front-end (identique à odonto-app/public, inchangé)
   test/                   scripts de test (voir ci-dessous)
 ```
@@ -122,12 +125,36 @@ pour que l'application fonctionne : pas de framework web, pas de
 bibliothèque de génération Excel — tout est écrit directement avec les
 fonctions natives du runtime (fetch, Web Crypto, etc.).
 
+## Import d'un registre Excel existant
+
+Menu *Importer un fichier Excel* (réservé aux administrateurs) : identique en
+tout point à la version Node.js (voir `odonto-app/README.md` pour le détail
+du fonctionnement — chargement, vérification de la correspondance des
+colonnes, puis compte-rendu détaillé). Aucune valeur n'est jamais inventée,
+les patients déjà existants ne sont qu'enrichis, et les diagnostics/
+traitements non reconnus passent par le même mécanisme que le bouton
+« + Ajouter » de l'interface.
+
+La seule différence technique avec la version Node.js est l'absence de
+`node:zlib` dans le runtime Cloudflare Workers : la lecture d'un fichier
+`.xlsx` réel (compressé en DEFLATE par Excel/LibreOffice/Google Sheets)
+passe par un petit décompresseur DEFLATE écrit en JS pur
+(`src/utils/xlsx/inflate.js`), testé et validé contre `node:zlib` (voir
+`test/unit_inflate.mjs`).
+
 ## Tests inclus
 
 - `test/unit_reportbuilder.mjs` : vérifie la logique des rapports
   (tranches d'âge, totaux, regroupement des diagnostics personnalisés,
   rapport financier) avec des données simulées, sans toucher à votre vraie
   base. Lancer avec : `node test/unit_reportbuilder.mjs`.
+- `test/unit_inflate.mjs` : vérifie le décompresseur DEFLATE pur JS contre
+  `node:zlib`, sur des cas synthétiques et sur les vraies entrées
+  compressées du fichier `test/registre_test.xlsx`.
+- `test/unit_import.mjs` : vérifie la fonctionnalité d'import Excel de bout
+  en bout (reconnaissance des colonnes, dédoublonnage des patients, création
+  de diagnostics personnalisés, conservation des données complémentaires)
+  avec une base Supabase simulée en mémoire.
 - `test/smoke.mjs` : test de bout en bout (connexion, création patient,
   consultation, rapports, export Excel) contre une vraie base Supabase.
   Il a besoin d'une clé d'accès et de policies temporaires pour fonctionner

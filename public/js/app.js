@@ -158,6 +158,7 @@ const NAV_ITEMS = [
   { hash: '#/reports', label: 'Rapport d’activité', roles: ['admin', 'praticien'] },
   { hash: '#/reports/financier', label: 'Rapport financier', roles: ['admin', 'praticien'] },
   { hash: '#/users', label: 'Utilisateurs', roles: ['admin'] },
+  { hash: '#/import', label: 'Importer un fichier Excel', roles: ['admin'] },
 ];
 
 function renderTopbar() {
@@ -1203,6 +1204,195 @@ async function viewUsers() {
 }
 
 // ---------------------------------------------------------------------------
+// Vue : import d'un registre Excel existant
+// ---------------------------------------------------------------------------
+function arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function fieldOptionsHtml(catalog, selected) {
+  const opt = (value, label) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+  let html = opt('ignore', '— Ignorer cette colonne —');
+  html += '<optgroup label="Patient">';
+  for (const [key, def] of Object.entries(catalog.patient)) html += opt(`patient.${key}`, def.label);
+  html += opt('patient.extra', '+ Donnée complémentaire (fiche patient)');
+  html += '</optgroup><optgroup label="Consultation">';
+  for (const [key, def] of Object.entries(catalog.consultation)) html += opt(`consultation.${key}`, def.label);
+  html += opt('consultation.extra', '+ Donnée complémentaire (consultation)');
+  html += '</optgroup>';
+  return html;
+}
+
+function importRowStatusBadge(status) {
+  if (status === 'error') return '<span class="badge badge-red">Ignorée</span>';
+  if (status === 'warning') return '<span class="badge badge-warn">Avertissement</span>';
+  return '<span class="badge badge-green">OK</span>';
+}
+
+async function viewImport() {
+  // État propre à cette vue (fichier en mémoire entre les étapes, jamais
+  // ré-uploadé par l'utilisateur).
+  const ctx = { base64: null, headers: null, rows: null, fieldCatalog: null };
+
+  function renderUploadStep(errorHtml = '') {
+    mount(`
+      <div class="card">
+        <h2 style="margin-top:0;">Importer un registre Excel (.xlsx)</h2>
+        <p class="muted">
+          Choisissez le fichier Excel de votre registre existant. À l'étape suivante, vous pourrez vérifier et
+          corriger la correspondance entre les colonnes du fichier et les champs de l'application avant toute
+          importation : rien n'est enregistré à cette étape.
+        </p>
+        ${errorHtml}
+        <div class="field">
+          <label>Fichier Excel (.xlsx) *</label>
+          <input type="file" id="importFile" accept=".xlsx" />
+        </div>
+        <button class="btn" id="analyzeBtn" disabled>Analyser le fichier</button>
+      </div>
+    `);
+
+    const fileInput = document.getElementById('importFile');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    let selectedFile = null;
+
+    fileInput.addEventListener('change', () => {
+      selectedFile = fileInput.files[0] || null;
+      analyzeBtn.disabled = !selectedFile;
+    });
+
+    analyzeBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+      analyzeBtn.disabled = true;
+      analyzeBtn.textContent = 'Analyse en cours…';
+      try {
+        const buf = await selectedFile.arrayBuffer();
+        const base64 = arrayBufferToBase64(buf);
+        const preview = await apiFetch('/api/import/preview', { method: 'POST', body: { contentBase64: base64 } });
+        ctx.base64 = base64;
+        ctx.headers = preview.headers;
+        ctx.fieldCatalog = preview.fieldCatalog;
+        renderMappingStep(preview);
+      } catch (err) {
+        renderUploadStep(`<div class="error-box">${escapeHtml(err.message)}</div>`);
+      }
+    });
+  }
+
+  function renderMappingStep(preview) {
+    const { headers, totalRows, sampleRows, mappingSuggestions, fieldCatalog } = preview;
+    const sampleFor = (i) => {
+      const vals = sampleRows.map((r) => r[i]).filter((v) => v !== null && v !== undefined && String(v).trim() !== '');
+      return vals.slice(0, 2).map((v) => escapeHtml(String(v))).join(' / ') || '<span class="muted">—</span>';
+    };
+
+    mount(`
+      <div class="card">
+        <h2 style="margin-top:0;">Correspondance des colonnes</h2>
+        <p class="muted">
+          ${totalRows} ligne(s) de données trouvée(s). Vérifiez la correspondance suggérée pour chaque colonne
+          avant de poursuivre — une colonne non reconnue n'est <strong>jamais</strong> importée tant que vous ne
+          choisissez pas explicitement « Donnée complémentaire » ou le champ correspondant.
+        </p>
+        <div id="mappingError"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Colonne du fichier</th><th>Exemple de valeurs</th><th>Correspond à</th></tr></thead>
+            <tbody id="mappingBody">
+              ${headers.map((h, i) => `
+                <tr>
+                  <td><strong>${escapeHtml(h || '(sans titre)')}</strong></td>
+                  <td>${sampleFor(i)}</td>
+                  <td><select data-col="${i}">${fieldOptionsHtml(fieldCatalog, mappingSuggestions[i].suggestion || 'ignore')}</select></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn btn-ghost" id="backBtn">← Choisir un autre fichier</button>
+          <button class="btn" id="commitBtn">Vérifier et importer</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('backBtn').addEventListener('click', () => renderUploadStep());
+    document.getElementById('commitBtn').addEventListener('click', async () => {
+      const mapping = {};
+      document.querySelectorAll('#mappingBody select[data-col]').forEach((sel) => {
+        mapping[sel.dataset.col] = sel.value;
+      });
+      if (!Object.values(mapping).some((v) => v && v !== 'ignore')) {
+        document.getElementById('mappingError').innerHTML =
+          '<div class="error-box">Choisissez au moins une colonne à importer.</div>';
+        return;
+      }
+      const commitBtn = document.getElementById('commitBtn');
+      commitBtn.disabled = true;
+      commitBtn.textContent = 'Importation en cours…';
+      try {
+        const { report } = await apiFetch('/api/import/commit', { method: 'POST', body: { contentBase64: ctx.base64, mapping } });
+        renderResultStep(report);
+      } catch (err) {
+        document.getElementById('mappingError').innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+        commitBtn.disabled = false;
+        commitBtn.textContent = 'Vérifier et importer';
+      }
+    });
+  }
+
+  function renderResultStep(report) {
+    const customList = (items) => (items.length ? items.map((i) => escapeHtml(i.libelle)).join(', ') : 'aucun');
+    mount(`
+      <div class="card">
+        <h2 style="margin-top:0;">Résultat de l'import</h2>
+        <div class="grid grid-3">
+          <div class="stat"><div class="stat-value">${report.patients.created}</div><div class="stat-label">patients créés</div></div>
+          <div class="stat"><div class="stat-value">${report.patients.matched}</div><div class="stat-label">patients déjà existants (enrichis)</div></div>
+          <div class="stat"><div class="stat-value">${report.patients.ambiguous}</div><div class="stat-label">lignes ambiguës ignorées</div></div>
+          <div class="stat"><div class="stat-value">${report.consultations.created}</div><div class="stat-label">consultations créées</div></div>
+          <div class="stat"><div class="stat-value">${report.consultations.skipped}</div><div class="stat-label">consultations non créées</div></div>
+          <div class="stat"><div class="stat-value">${report.totalRows}</div><div class="stat-label">lignes traitées</div></div>
+        </div>
+        <p style="margin-top:14px;">
+          Nouveaux diagnostics ajoutés à la liste de référence : ${customList(report.customPathologiesCreated)}.<br/>
+          Nouveaux traitements ajoutés à la liste de référence : ${customList(report.customTraitementsCreated)}.
+        </p>
+      </div>
+      <div class="section-title">Détail ligne par ligne</div>
+      <div class="card">
+        <div class="table-wrap" style="max-height:420px; overflow-y:auto;">
+          <table>
+            <thead><tr><th>Ligne</th><th>Statut</th><th>Détails</th></tr></thead>
+            <tbody>
+              ${report.rows.map((r) => `
+                <tr>
+                  <td>${r.rowNumber}</td>
+                  <td>${importRowStatusBadge(r.status)}</td>
+                  <td>${r.messages.length ? escapeHtml(r.messages.join(' · ')) : '<span class="muted">—</span>'}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="3" class="muted">Aucune ligne.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn" id="newImportBtn">Importer un autre fichier</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('newImportBtn').addEventListener('click', () => renderUploadStep());
+  }
+
+  renderUploadStep();
+}
+
+// ---------------------------------------------------------------------------
 // Routeur (basé sur le hash)
 // ---------------------------------------------------------------------------
 const ROUTES = [
@@ -1215,6 +1405,7 @@ const ROUTES = [
   { pattern: /^#\/reports$/, view: viewReports, roles: ['admin', 'praticien'] },
   { pattern: /^#\/reports\/financier$/, view: viewFinancialReport, roles: ['admin', 'praticien'] },
   { pattern: /^#\/users$/, view: viewUsers, roles: ['admin'] },
+  { pattern: /^#\/import$/, view: viewImport, roles: ['admin'] },
 ];
 
 async function route() {
