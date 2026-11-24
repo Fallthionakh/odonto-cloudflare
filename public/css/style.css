@@ -186,6 +186,13 @@ tr:hover td { background: #fafcfb; }
 
 .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
 
+.report-table-edit input[type=number] {
+  width: 48px;
+  padding: 4px 3px;
+  text-align: center;
+}
+.report-table-edit td { padding: 4px 5px; }
+
 .combo { position: relative; }
 .combo-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .combo-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--primary-light); color: var(--primary-dark); border-radius: 999px; padding: 4px 6px 4px 11px; font-size: 12.5px; font-weight: 600; }

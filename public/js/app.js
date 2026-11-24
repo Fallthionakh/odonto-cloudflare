@@ -157,6 +157,8 @@ const NAV_ITEMS = [
   { hash: '#/patients', label: 'Patients', roles: ['admin', 'praticien'] },
   { hash: '#/reports', label: 'Rapport d’activité', roles: ['admin', 'praticien'] },
   { hash: '#/reports/financier', label: 'Rapport financier', roles: ['admin', 'praticien'] },
+  { hash: '#/manual-reports', label: 'Rapport manuel', roles: ['admin', 'praticien'] },
+  { hash: '#/consumables', label: 'Consommables', roles: ['admin', 'praticien'] },
   { hash: '#/users', label: 'Utilisateurs', roles: ['admin'] },
   { hash: '#/import', label: 'Importer un fichier Excel', roles: ['admin'] },
 ];
@@ -1134,6 +1136,412 @@ async function viewFinancialReport() {
 }
 
 // ---------------------------------------------------------------------------
+// Vue : rapport d'activité — saisie directe (manuelle), et consommables
+// ---------------------------------------------------------------------------
+// Sélecteur de périodicité partagé (mois / trimestre / semestre / année),
+// utilisé par le rapport manuel et par le suivi des consommables. `prefix`
+// évite les collisions d'id entre les deux vues.
+function manualPeriodControls(prefix) {
+  const now = new Date();
+  const month = now.toISOString().slice(0, 7);
+  const year = now.getFullYear();
+  const currentQ = Math.floor(now.getMonth() / 3) + 1;
+  const currentS = now.getMonth() < 6 ? 1 : 2;
+  return `
+    <div class="field">
+      <label>Périodicité</label>
+      <div class="pill-toggle" data-field="periode_type">
+        <button type="button" data-value="month" class="active">Mois</button>
+        <button type="button" data-value="quarter">Trimestre</button>
+        <button type="button" data-value="semester">Semestre</button>
+        <button type="button" data-value="year">Année</button>
+      </div>
+    </div>
+    <div class="grid grid-3" id="${prefix}PeriodeInputs">
+      <div class="field" data-periode="month">
+        <label>Mois</label>
+        <input type="month" id="${prefix}MonthInput" value="${month}" />
+      </div>
+      <div class="field" data-periode="quarter" hidden>
+        <label>Trimestre</label>
+        <div class="btn-row">
+          <input type="number" id="${prefix}QYearInput" min="2000" max="2100" value="${year}" style="max-width:110px;" />
+          <select id="${prefix}QInput">
+            <option value="1" ${currentQ === 1 ? 'selected' : ''}>T1 (Jan-Mars)</option>
+            <option value="2" ${currentQ === 2 ? 'selected' : ''}>T2 (Avr-Juin)</option>
+            <option value="3" ${currentQ === 3 ? 'selected' : ''}>T3 (Juil-Sept)</option>
+            <option value="4" ${currentQ === 4 ? 'selected' : ''}>T4 (Oct-Déc)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field" data-periode="semester" hidden>
+        <label>Semestre</label>
+        <div class="btn-row">
+          <input type="number" id="${prefix}SYearInput" min="2000" max="2100" value="${year}" style="max-width:110px;" />
+          <select id="${prefix}SInput">
+            <option value="1" ${currentS === 1 ? 'selected' : ''}>S1 (Jan-Juin)</option>
+            <option value="2" ${currentS === 2 ? 'selected' : ''}>S2 (Juil-Déc)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field" data-periode="year" hidden>
+        <label>Année</label>
+        <input type="number" id="${prefix}YearInput" min="2000" max="2100" value="${year}" />
+      </div>
+    </div>
+  `;
+}
+
+function wireManualPeriodControls(container, prefix, onChange) {
+  let periodeType = 'month';
+  const toggle = container.querySelector('[data-field="periode_type"]');
+  function showFieldsFor(type) {
+    container.querySelectorAll('[data-periode]').forEach((el) => { el.hidden = el.dataset.periode !== type; });
+  }
+  toggle.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      toggle.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      periodeType = btn.dataset.value;
+      showFieldsFor(periodeType);
+      onChange && onChange();
+    });
+  });
+  showFieldsFor(periodeType);
+
+  return function resolvePeriod() {
+    if (periodeType === 'month') {
+      const v = container.querySelector(`#${prefix}MonthInput`).value;
+      return v ? { type: 'month', key: v } : null;
+    }
+    if (periodeType === 'quarter') {
+      const y = container.querySelector(`#${prefix}QYearInput`).value;
+      const q = container.querySelector(`#${prefix}QInput`).value;
+      return y && q ? { type: 'quarter', key: `${y}-Q${q}` } : null;
+    }
+    if (periodeType === 'semester') {
+      const y = container.querySelector(`#${prefix}SYearInput`).value;
+      const s = container.querySelector(`#${prefix}SInput`).value;
+      return y && s ? { type: 'semester', key: `${y}-S${s}` } : null;
+    }
+    const y = container.querySelector(`#${prefix}YearInput`).value;
+    return y ? { type: 'year', key: String(y) } : null;
+  };
+}
+
+// --- Rapport d'activité : grille éditable (mode mensuel) -------------------
+function reportSectionEditableTable(title, rows, sectionKey) {
+  const ageCols = AGE_GROUPS.map((ag) => `<th colspan="2">${ag}</th>`).join('');
+  const subCols = AGE_GROUPS.map(() => '<th>M</th><th>F</th>').join('');
+  const body = rows.map((r) => {
+    const cells = AGE_GROUPS.map((ag) => {
+      const v = r.parAge[ag] || { M: 0, F: 0 };
+      const mAttr = `class="manual-cell" data-section="${sectionKey}" data-row="${r.id}" data-age="${escapeHtml(ag)}" data-sex="M"`;
+      const fAttr = `class="manual-cell" data-section="${sectionKey}" data-row="${r.id}" data-age="${escapeHtml(ag)}" data-sex="F"`;
+      return `<td><input type="number" min="0" step="1" ${mAttr} value="${v.M}" /></td><td><input type="number" min="0" step="1" ${fAttr} value="${v.F}" /></td>`;
+    }).join('');
+    const feAttr = `class="manual-cell" data-section="${sectionKey}" data-row="${r.id}" data-fe="1"`;
+    return `<tr><td>${escapeHtml(r.libelle)}</td>${cells}<td><strong data-total-sex="M">${r.totaux.M}</strong></td><td><strong data-total-sex="F">${r.totaux.F}</strong></td><td><input type="number" min="0" step="1" ${feAttr} value="${r.femmeEnceinte}" /></td></tr>`;
+  }).join('');
+  return `
+    <div class="section-title">${title}</div>
+    <div class="table-wrap">
+      <table class="report-table report-table-edit">
+        <thead>
+          <tr><th rowspan="2">Libellé</th>${ageCols}<th colspan="2">Total</th><th rowspan="2">Femme enceinte</th></tr>
+          <tr>${subCols}<th>M</th><th>F</th></tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function recomputeRowTotals(tr) {
+  let sumM = 0;
+  let sumF = 0;
+  tr.querySelectorAll('input.manual-cell[data-sex="M"]').forEach((i) => { sumM += Number(i.value) || 0; });
+  tr.querySelectorAll('input.manual-cell[data-sex="F"]').forEach((i) => { sumF += Number(i.value) || 0; });
+  const mEl = tr.querySelector('[data-total-sex="M"]');
+  const fEl = tr.querySelector('[data-total-sex="F"]');
+  if (mEl) mEl.textContent = sumM;
+  if (fEl) fEl.textContent = sumF;
+}
+
+function wireManualCellTotals(root) {
+  root.querySelectorAll('.report-table-edit').forEach((table) => {
+    table.addEventListener('input', (e) => {
+      if (!e.target.classList.contains('manual-cell')) return;
+      const tr = e.target.closest('tr');
+      if (tr) recomputeRowTotals(tr);
+    });
+  });
+}
+
+function collectManualReportPayload(container) {
+  const sections = { morbidite: {}, indicateursMorbidite: {}, therapeutique: {}, mortalite: {} };
+  container.querySelectorAll('.manual-cell').forEach((input) => {
+    const section = input.dataset.section;
+    const rowId = input.dataset.row;
+    if (!sections[section]) return;
+    if (!sections[section][rowId]) sections[section][rowId] = { parAge: {}, femmeEnceinte: 0 };
+    if (input.dataset.fe) {
+      sections[section][rowId].femmeEnceinte = Number(input.value) || 0;
+    } else {
+      const ag = input.dataset.age;
+      const sex = input.dataset.sex;
+      if (!sections[section][rowId].parAge[ag]) sections[section][rowId].parAge[ag] = { M: 0, F: 0 };
+      sections[section][rowId].parAge[ag][sex] = Number(input.value) || 0;
+    }
+  });
+  return sections;
+}
+
+async function viewManualReport() {
+  let settings = { nomStructure: '' };
+  try { settings = await apiFetch('/api/settings'); } catch {}
+
+  mount(`
+    <div class="card">
+      <h2 style="margin-top:0;">Rapport d'activité — saisie directe</h2>
+      <p class="muted">Remplissez directement les chiffres mois par mois, comme sur un tableau papier. Les rapports trimestriels, semestriels et annuels sont calculés automatiquement à partir des mois déjà saisis — ils ne se ressaisissent jamais.</p>
+      <div id="manualPeriodControls">${manualPeriodControls('mr')}</div>
+      <div class="field" style="max-width:420px;">
+        <label>Nom de la structure (entête officiel du rapport)</label>
+        <input type="text" id="mrNomStructure" value="${escapeHtml(settings.nomStructure || '')}" placeholder="ex. Centre hospitalier régional ..." />
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="mrLoadBtn">Charger</button>
+        <button class="btn btn-secondary" id="mrSaveBtn" hidden>Enregistrer la saisie du mois</button>
+        <button class="btn btn-secondary" id="mrExportBtn">Télécharger en Excel</button>
+      </div>
+      <div id="mrSummary"></div>
+    </div>
+    <div id="mrBody"></div>
+  `);
+
+  const resolvePeriod = wireManualPeriodControls(document.getElementById('manualPeriodControls'), 'mr');
+  const saveBtn = document.getElementById('mrSaveBtn');
+  let currentPeriod = null;
+
+  async function saveNomStructureIfChanged() {
+    const value = document.getElementById('mrNomStructure').value.trim();
+    if (value === (settings.nomStructure || '')) return;
+    try {
+      await apiFetch('/api/settings', { method: 'PUT', body: { nomStructure: value } });
+      settings.nomStructure = value;
+    } catch {
+      // Un praticien n'a pas le droit de modifier ce paramètre réservé aux
+      // administrateurs : on laisse simplement la valeur saisie pour l'export du jour.
+    }
+  }
+
+  async function load() {
+    const period = resolvePeriod();
+    const summary = document.getElementById('mrSummary');
+    const body = document.getElementById('mrBody');
+    if (!period) { summary.innerHTML = '<div class="error-box">Veuillez choisir une période valide.</div>'; return; }
+    currentPeriod = period;
+    saveBtn.hidden = period.type !== 'month';
+    summary.innerHTML = '<p class="muted">Chargement…</p>';
+    body.innerHTML = '';
+    try {
+      const { report } = await apiFetch(`/api/manual-reports?type=${period.type}&key=${encodeURIComponent(period.key)}`);
+      const moisInfo = report.periode.mois.length > 1
+        ? ` · ${report.periode.moisSaisis}/${report.periode.mois.length} mois déjà saisis`
+        : '';
+      summary.innerHTML = `<div class="info-box">Période du ${fmtDate(report.periode.from)} au ${fmtDate(report.periode.to)}${moisInfo}.</div>`;
+      if (period.type === 'month') {
+        body.innerHTML = [
+          reportSectionEditableTable('Synthèse de Morbidité', report.morbidite, 'morbidite'),
+          reportSectionEditableTable('Rapport de morbidité du cabinet dentaire', report.indicateursMorbidite, 'indicateursMorbidite'),
+          reportSectionEditableTable('Rapport thérapeutique', report.therapeutique, 'therapeutique'),
+          reportSectionEditableTable('Rapport de Mortalité', report.mortalite, 'mortalite'),
+        ].join('');
+        wireManualCellTotals(body);
+      } else {
+        body.innerHTML = [
+          reportSectionTable('Synthèse de Morbidité', report.morbidite),
+          reportSectionTable('Rapport de morbidité du cabinet dentaire', report.indicateursMorbidite),
+          reportSectionTable('Rapport thérapeutique', report.therapeutique),
+          reportSectionTable('Rapport de Mortalité', report.mortalite),
+        ].join('');
+      }
+    } catch (err) {
+      summary.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  document.getElementById('mrLoadBtn').addEventListener('click', load);
+  saveBtn.addEventListener('click', async () => {
+    if (!currentPeriod || currentPeriod.type !== 'month') return;
+    const payload = collectManualReportPayload(document.getElementById('mrBody'));
+    try {
+      await apiFetch(`/api/manual-reports?key=${encodeURIComponent(currentPeriod.key)}`, { method: 'PUT', body: payload });
+      toast('Saisie enregistrée.');
+      load();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+  document.getElementById('mrExportBtn').addEventListener('click', async () => {
+    if (!currentPeriod) return toast('Veuillez choisir une période', true);
+    await saveNomStructureIfChanged();
+    try {
+      const structure = encodeURIComponent(document.getElementById('mrNomStructure').value.trim());
+      const blob = await apiFetch(
+        `/api/manual-reports/export?type=${currentPeriod.type}&key=${encodeURIComponent(currentPeriod.key)}&structure=${structure}`,
+        { isBlob: true }
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `rapport_mensuel_cabinet_dentaire_${currentPeriod.key}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  load();
+}
+
+// --- Consommables -----------------------------------------------------------
+function consommablesEditableTable(items) {
+  const body = items.map((it) => `
+    <tr>
+      <td>${escapeHtml(it.libelle)}</td>
+      <td>
+        <select class="cons-cell" data-id="${it.id}" data-field="disponibilite">
+          <option value="" ${!it.disponibilite ? 'selected' : ''}>—</option>
+          <option value="oui" ${it.disponibilite === 'oui' ? 'selected' : ''}>Oui</option>
+          <option value="non" ${it.disponibilite === 'non' ? 'selected' : ''}>Non</option>
+          <option value="na" ${it.disponibilite === 'na' ? 'selected' : ''}>N/A</option>
+        </select>
+      </td>
+      <td><input type="number" min="0" step="1" class="cons-cell" data-id="${it.id}" data-field="joursRupture" value="${it.joursRupture || 0}" style="max-width:100px;" /></td>
+    </tr>
+  `).join('');
+  return `
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead><tr><th>Libellé</th><th>Disponibilité</th><th>Nombre de jours de rupture</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function consommablesReadonlyTable(items) {
+  const body = items.map((it) => {
+    const parts = [];
+    if (it.moisDisponible) parts.push(`Oui : ${it.moisDisponible} mois`);
+    if (it.moisIndisponible) parts.push(`Non : ${it.moisIndisponible} mois`);
+    if (it.moisNonApplicable) parts.push(`N/A : ${it.moisNonApplicable} mois`);
+    const dispo = parts.join(' · ') || '<span class="muted">Aucune saisie</span>';
+    return `<tr><td>${escapeHtml(it.libelle)}</td><td>${dispo}</td><td><strong>${it.joursRuptureTotal}</strong></td></tr>`;
+  }).join('');
+  return `
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead><tr><th>Libellé</th><th>Disponibilité (détail par mois)</th><th>Total jours de rupture</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function collectConsommablesPayload(container) {
+  const payload = {};
+  container.querySelectorAll('.cons-cell').forEach((el) => {
+    const id = el.dataset.id;
+    if (!payload[id]) payload[id] = { disponibilite: null, joursRupture: 0 };
+    if (el.dataset.field === 'disponibilite') payload[id].disponibilite = el.value || null;
+    if (el.dataset.field === 'joursRupture') payload[id].joursRupture = Number(el.value) || 0;
+  });
+  return payload;
+}
+
+async function viewConsommables() {
+  mount(`
+    <div class="card">
+      <h2 style="margin-top:0;">Consommables — suivi mensuel</h2>
+      <p class="muted">Disponibilité et nombre de jours de rupture de stock de chaque consommable, mois par mois. Les périodes plus longues sont calculées automatiquement.</p>
+      <div id="consPeriodControls">${manualPeriodControls('cons')}</div>
+      <div class="btn-row">
+        <button class="btn" id="consLoadBtn">Charger</button>
+        <button class="btn btn-secondary" id="consSaveBtn" hidden>Enregistrer la saisie du mois</button>
+        <button class="btn btn-secondary" id="consExportBtn">Télécharger en Excel</button>
+      </div>
+      <div id="consSummary"></div>
+    </div>
+    <div id="consBody"></div>
+  `);
+
+  const resolvePeriod = wireManualPeriodControls(document.getElementById('consPeriodControls'), 'cons');
+  const saveBtn = document.getElementById('consSaveBtn');
+  let currentPeriod = null;
+
+  async function load() {
+    const period = resolvePeriod();
+    const summary = document.getElementById('consSummary');
+    const body = document.getElementById('consBody');
+    if (!period) { summary.innerHTML = '<div class="error-box">Veuillez choisir une période valide.</div>'; return; }
+    currentPeriod = period;
+    saveBtn.hidden = period.type !== 'month';
+    summary.innerHTML = '<p class="muted">Chargement…</p>';
+    body.innerHTML = '';
+    try {
+      const { report } = await apiFetch(`/api/manual-consumables?type=${period.type}&key=${encodeURIComponent(period.key)}`);
+      const moisInfo = report.periode.mois.length > 1
+        ? ` · ${report.periode.moisSaisis}/${report.periode.mois.length} mois déjà saisis`
+        : '';
+      summary.innerHTML = `<div class="info-box">Période du ${fmtDate(report.periode.from)} au ${fmtDate(report.periode.to)}${moisInfo}.</div>`;
+      body.innerHTML = period.type === 'month' ? consommablesEditableTable(report.items) : consommablesReadonlyTable(report.items);
+    } catch (err) {
+      summary.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  document.getElementById('consLoadBtn').addEventListener('click', load);
+  saveBtn.addEventListener('click', async () => {
+    if (!currentPeriod || currentPeriod.type !== 'month') return;
+    const payload = collectConsommablesPayload(document.getElementById('consBody'));
+    try {
+      await apiFetch(`/api/manual-consumables?key=${encodeURIComponent(currentPeriod.key)}`, { method: 'PUT', body: payload });
+      toast('Saisie enregistrée.');
+      load();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+  document.getElementById('consExportBtn').addEventListener('click', async () => {
+    if (!currentPeriod) return toast('Veuillez choisir une période', true);
+    try {
+      const blob = await apiFetch(
+        `/api/manual-consumables/export?type=${currentPeriod.type}&key=${encodeURIComponent(currentPeriod.key)}`,
+        { isBlob: true }
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `consommables_${currentPeriod.key}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  load();
+}
+
+// ---------------------------------------------------------------------------
 // Vue : gestion des utilisateurs (admin)
 // ---------------------------------------------------------------------------
 async function viewUsers() {
@@ -1427,6 +1835,8 @@ const ROUTES = [
   { pattern: /^#\/patients\/(\d+)$/, view: (m) => viewPatientDetail(m[1]) },
   { pattern: /^#\/reports$/, view: viewReports, roles: ['admin', 'praticien'] },
   { pattern: /^#\/reports\/financier$/, view: viewFinancialReport, roles: ['admin', 'praticien'] },
+  { pattern: /^#\/manual-reports$/, view: viewManualReport, roles: ['admin', 'praticien'] },
+  { pattern: /^#\/consumables$/, view: viewConsommables, roles: ['admin', 'praticien'] },
   { pattern: /^#\/users$/, view: viewUsers, roles: ['admin'] },
   { pattern: /^#\/import$/, view: viewImport, roles: ['admin'] },
 ];

@@ -13,7 +13,7 @@ const COL_TOTAL_M = 1 + NB_AGE * 2 + 1;
 const COL_TOTAL_F = COL_TOTAL_M + 1;
 const COL_ENCEINTE = COL_TOTAL_F + 1;
 
-class SheetBuilder {
+export class SheetBuilder {
   constructor() {
     this.rows = [];
     this.merges = [];
@@ -105,10 +105,12 @@ class SheetBuilder {
   }
 }
 
-function morbiditeLabel(row) {
+export function morbiditeLabel(row) {
   if (!row.categorie || row.categorie === row.libelle) return row.libelle;
   return `${row.categorie} — ${row.libelle}`;
 }
+
+export { NB_AGE, TOTAL_COLS, COL_LABEL, COL_TOTAL_M, COL_TOTAL_F, COL_ENCEINTE };
 
 export function buildReportWorkbook(report, meta) {
   const sb = new SheetBuilder();

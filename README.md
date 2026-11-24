@@ -32,7 +32,9 @@ touchent jamais aux tables de neuro-chir (`fiches`, `parametres`,
 - Les tables `odonto_users`, `odonto_sessions`, `odonto_patients`,
   `odonto_consultations`, `odonto_consultation_diagnostics`,
   `odonto_consultation_traitements`, `odonto_custom_pathologies`,
-  `odonto_custom_traitements` ont été créées dans votre projet FAMMSIM.
+  `odonto_custom_traitements`, `odonto_manual_reports`,
+  `odonto_manual_consumables`, `odonto_settings` ont été créées dans votre
+  projet FAMMSIM.
 - Elles sont verrouillées par défaut (Row Level Security activée, sans
   règle) : seule l'application (via sa clé secrète `service_role`, voir
   plus bas) peut y lire ou écrire. Personne d'autre ne peut y accéder.
@@ -115,7 +117,7 @@ cloudflare-worker/
       xlsx/               zip.js + xlsxBuilder.js (écriture), inflate.js + xlsxReader.js (lecture)
       importMapping.js    reconnaissance des colonnes Excel + conversion de valeurs
       importer.js         logique de création/dédoublonnage lors d'un import
-    data/                 listes officielles (pathologies, traitements, indicateurs, importFields.js)
+    data/                 listes officielles (pathologies, traitements, indicateurs, consommables, importFields.js)
   public/                 front-end (identique à odonto-app/public, inchangé)
   test/                   scripts de test (voir ci-dessous)
 ```
@@ -124,6 +126,23 @@ Comme pour la version Node.js, **aucune dépendance npm n'est nécessaire**
 pour que l'application fonctionne : pas de framework web, pas de
 bibliothèque de génération Excel — tout est écrit directement avec les
 fonctions natives du runtime (fetch, Web Crypto, etc.).
+
+## Rapport en saisie directe (mode manuel) et suivi des consommables
+
+En complément du rapport automatique, le menu *Rapport manuel* permet de
+saisir directement les chiffres mois par mois (comme sur un tableau papier),
+avec les mêmes lignes que le rapport automatique. Les rapports trimestriel,
+semestriel et annuel ne sont jamais ressaisis : ils sont recalculés à partir
+des mois déjà saisis. L'export Excel reprend l'entête officiel du Ministère
+de la Santé et de l'Action Sociale (Direction de la Lutte contre la Maladie /
+Division de la Santé Bucco-Dentaire), avec le nom de la structure
+configurable. Le menu *Consommables* suit, sur les mêmes périodicités, la
+disponibilité et les jours de rupture de stock des 19 consommables du
+cabinet dentaire. Identique en tout point à la version Node.js (voir
+`odonto-app/README.md`), les données étant stockées dans les tables
+Supabase `odonto_manual_reports`, `odonto_manual_consumables` et
+`odonto_settings` (déjà créées, verrouillées par RLS comme les autres
+tables ODONTO).
 
 ## Import d'un registre Excel existant
 
@@ -155,6 +174,11 @@ passe par un petit décompresseur DEFLATE écrit en JS pur
   en bout (reconnaissance des colonnes, dédoublonnage des patients, création
   de diagnostics personnalisés, conservation des données complémentaires)
   avec une base Supabase simulée en mémoire.
+- `test/unit_manual_reports.mjs` : vérifie le rapport en saisie directe
+  (addition automatique des mois saisis sur un trimestre/une année, lignes
+  inconnues ignorées sans planter, ré-enregistrement d'un mois qui remplace
+  au lieu de s'additionner) et le suivi des consommables, avec une base
+  Supabase simulée en mémoire.
 - `test/smoke.mjs` : test de bout en bout (connexion, création patient,
   consultation, rapports, export Excel) contre une vraie base Supabase.
   Il a besoin d'une clé d'accès et de policies temporaires pour fonctionner

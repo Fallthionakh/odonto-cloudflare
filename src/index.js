@@ -12,6 +12,7 @@ import { register as registerConsultations } from './routes/consultations.js';
 import { register as registerReference } from './routes/reference.js';
 import { register as registerReports } from './routes/reports.js';
 import { register as registerImport } from './routes/import.js';
+import { register as registerManualReports } from './routes/manualReports.js';
 
 const router = new Router();
 registerAuth(router);
@@ -21,6 +22,7 @@ registerConsultations(router);
 registerReference(router);
 registerReports(router);
 registerImport(router);
+registerManualReports(router);
 
 export default {
   async fetch(request, env) {
