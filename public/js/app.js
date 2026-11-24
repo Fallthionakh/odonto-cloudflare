@@ -176,6 +176,32 @@ function renderTopbar() {
 
 function mount(html) {
   appEl.innerHTML = html;
+  wirePasswordToggles(appEl);
+}
+
+// Champ mot de passe avec icône œil pour afficher/masquer la saisie en clair.
+function passwordFieldHtml(label, name, attrs = '') {
+  return `
+    <div class="field">
+      <label>${label}</label>
+      <div class="password-field">
+        <input type="password" name="${name}" ${attrs} />
+        <button type="button" class="password-toggle" tabindex="-1" aria-label="Afficher le mot de passe">👁</button>
+      </div>
+    </div>
+  `;
+}
+
+function wirePasswordToggles(root) {
+  root.querySelectorAll('.password-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const input = btn.previousElementSibling;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.textContent = show ? '🙈' : '👁';
+      btn.setAttribute('aria-label', show ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -196,10 +222,7 @@ function viewLogin() {
             <label>Identifiant</label>
             <input type="text" name="username" autocomplete="username" required />
           </div>
-          <div class="field">
-            <label>Mot de passe</label>
-            <input type="password" name="password" autocomplete="current-password" required />
-          </div>
+          ${passwordFieldHtml('Mot de passe', 'password', 'autocomplete="current-password" required')}
           <button class="btn" type="submit" style="width:100%">Se connecter</button>
         </form>
       </div>
@@ -1126,7 +1149,7 @@ async function viewUsers() {
           <select name="role"><option value="praticien">Praticien</option><option value="admin">Administrateur</option></select>
         </div>
         <div class="field"><label>Identifiant *</label><input type="text" name="username" required /></div>
-        <div class="field"><label>Mot de passe *</label><input type="password" name="password" minlength="6" required /></div>
+        ${passwordFieldHtml('Mot de passe *', 'password', 'minlength="6" required')}
         <div class="field" style="align-self:end;"><button class="btn" type="submit" style="width:100%;">Créer le compte</button></div>
       </form>
     </div>

@@ -85,6 +85,24 @@ input[type=text], input[type=date], input[type=password], input[type=tel], input
   color: var(--text);
 }
 textarea { min-height: 64px; resize: vertical; }
+
+.password-field { position: relative; }
+.password-field input { padding-right: 36px; }
+.password-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 6px;
+  color: var(--text-muted);
+  border-radius: 6px;
+}
+.password-toggle:hover { background: var(--primary-light); }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 .btn {

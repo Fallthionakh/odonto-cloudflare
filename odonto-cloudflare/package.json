@@ -1,0 +1,14 @@
+{
+  "name": "odonto-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ODONTO - version Cloudflare Worker + Supabase (sans dépendance npm)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

@@ -1,0 +1,22 @@
+name = "odonto-cloudflare"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Fichiers statiques du front-end (identiques à la version Node.js).
+# Cloudflare sert directement ces fichiers quand l'URL correspond ; sinon la
+# requête est transmise au Worker (src/index.js), donc toutes les routes
+# /api/* arrivent bien jusqu'au code ci-dessous.
+[assets]
+directory = "./public"
+
+# Variables non sensibles (facultatif, modifiable depuis le tableau de bord
+# Cloudflare : Worker > Settings > Variables).
+[vars]
+ODONTO_NOM_STRUCTURE = ""
+
+# Secrets à définir avec `wrangler secret put <NOM>` (ou depuis le tableau de
+# bord Cloudflare : Worker > Settings > Variables > Add secret) :
+#   SUPABASE_URL                -> URL du projet Supabase (ex: https://xxxx.supabase.co)
+#   SUPABASE_SERVICE_ROLE_KEY   -> clé "service_role" du projet Supabase (jamais la clé publique "anon")
+#
+# Voir README.md pour la procédure pas-à-pas.
